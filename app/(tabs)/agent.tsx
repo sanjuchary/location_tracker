@@ -20,6 +20,7 @@ import MapView, { Marker, Polyline } from 'react-native-maps';
 import { useRouter } from 'expo-router';
 import { View as RNView } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
+import Constants from 'expo-constants';
 
 interface TrackedUser {
   id: string;
@@ -58,7 +59,7 @@ export default function AgentScreen() {
   useEffect(() => {
     requestLocationPermission();
     startMonitoring();
-    const SOCKET_URL = 'http://51.21.221.235'; // Use your backend IP
+    const SOCKET_URL = Constants.expoConfig?.extra?.apiUrl; // Use your backend IP
     const connectSocket = async () => {
       const token = await AsyncStorage.getItem('token');
       if (!token) return;

@@ -10,9 +10,10 @@ import {
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Redirect, useRouter } from 'expo-router';
+import Constants from 'expo-constants';
 
-// For Android emulator use 10.0.2.2, for iOS simulator use localhost, for real device use your PC's IP
-const API_URL = 'http://51.21.221.235/api';
+const API_URL =
+  Constants.expoConfig?.extra?.apiUrl || 'https://fallback-api-url.com';
 
 export default function LoginScreen() {
   const [username, setUsername] = useState('');
