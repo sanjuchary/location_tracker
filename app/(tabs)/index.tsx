@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { View, ActivityIndicator } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Redirect } from 'expo-router';
- 
+
 export default function TabIndex() {
   const [loading, setLoading] = useState(true);
   const [role, setRole] = useState<string | null>(null);
@@ -26,7 +26,6 @@ export default function TabIndex() {
       </View>
     );
   }
-
   if (!token || !role) {
     return <Redirect href="/login" />;
   }
@@ -38,4 +37,4 @@ export default function TabIndex() {
     return <Redirect href="/(tabs)/agent" />;
   }
   return <Redirect href="/login" />;
-} 
+}

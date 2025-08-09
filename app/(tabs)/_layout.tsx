@@ -8,7 +8,7 @@ export default function TabLayout() {
   const [role, setRole] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
-    AsyncStorage.getItem('role').then(r => {
+    AsyncStorage.getItem('role').then((r) => {
       setRole(r);
       setLoading(false);
     });
@@ -41,15 +41,14 @@ export default function TabLayout() {
           fontWeight: '600',
           marginBottom: 4,
         },
-      }}>
+      }}
+    >
       {role === 'user' && (
         <Tabs.Screen
           name="user"
           options={{
             title: 'User',
-            tabBarIcon: ({ size, color }) => (
-              <User size={size} color={color} />
-            ),
+            tabBarIcon: ({ size, color }) => <User size={size} color={color} />,
           }}
         />
       )}
