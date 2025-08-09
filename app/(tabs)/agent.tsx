@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -6,6 +6,7 @@ import {
   FlatList,
   TouchableOpacity,
   Platform,
+  Alert,
 } from 'react-native';
 import * as Location from 'expo-location';
 import { LocationTracking } from '@/services/LocationTracking';
@@ -41,6 +42,8 @@ export default function AgentScreen() {
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [isInitialized, setIsInitialized] = useState(false);
   const [userLocations, setUserLocations] = useState<{
     [userId: string]: { latitude: number; longitude: number };
   }>({});
@@ -49,68 +52,158 @@ export default function AgentScreen() {
     latitude: number;
     longitude: number;
   } | null>(null);
-  // Add selectedUserId state
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
   const router = useRouter();
   const MAPBOX_API_KEY =
     'pk.eyJ1Ijoic2FuanUxNSIsImEiOiJjbWUxMGR4bWMwYmE3Mmpwcmo1cmE5eW40In0._JC7w64EKxzPNMCaIrUgqA';
   const [routeCoords, setRouteCoords] = useState([]);
 
-  useEffect(() => {
-    requestLocationPermission();
-    startMonitoring();
-    const SOCKET_URL = Constants.expoConfig?.extra?.apiUrl; // Use your backend IP
-    const connectSocket = async () => {
-      const token = await AsyncStorage.getItem('token');
-      if (!token) return;
-      const s = io(SOCKET_URL, { transports: ['websocket'] });
-      s.on('connect', () => {
-        s.emit('join', { token });
-      });
-      s.on('userLocation', (data) => {
-        console.log('Received userLocation:', data);
-        setUserLocations((prev) => ({
-          ...prev,
-          [data.userId]: { latitude: data.latitude, longitude: data.longitude },
-        }));
-      });
-      setSocket(s);
-    };
-    connectSocket();
-    return () => {
-      socket?.disconnect();
-    };
-    // eslint-disable-next-line
-  }, []);
-
-  const requestLocationPermission = async () => {
+  const requestLocationPermission = useCallback(async () => {
     try {
+      setError(null);
+      setIsLoading(true);
+      
+      // Check if location services are enabled
+      const isEnabled = await Location.hasServicesEnabledAsync();
+      if (!isEnabled) {
+        Alert.alert(
+          'Location Services Disabled',
+          'Please enable location services in your device settings to use this app.',
+          [{ text: 'OK', onPress: () => setHasPermission(false) }]
+        );
+        setHasPermission(false);
+        setIsLoading(false);
+        return;
+      }
+
+      // Request permission
       const { status } = await Location.requestForegroundPermissionsAsync();
       setHasPermission(status === 'granted');
+
+      if (status !== 'granted') {
+        Alert.alert(
+          'Location Permission Required',
+          'This app needs location permission to track delivery locations. Please grant permission in settings.',
+          [{ text: 'OK', onPress: () => setHasPermission(false) }]
+        );
+      }
     } catch (error) {
       console.error('Error requesting location permission:', error);
       setHasPermission(false);
+      setError('Failed to request location permission');
+      Alert.alert(
+        'Location Error',
+        'There was an error accessing location services. Please try again.',
+        [{ text: 'OK' }]
+      );
     } finally {
       setIsLoading(false);
+      setIsInitialized(true);
     }
-  };
+  }, []);
 
-  const startMonitoring = () => {
-    // Simulate receiving user locations with realistic data
-    // This function is no longer needed as userLocations is populated by Socket.IO
-  };
+  useEffect(() => {
+    if (!isInitialized) {
+      requestLocationPermission();
+    }
+  }, [isInitialized, requestLocationPermission]);
+
+  useEffect(() => {
+    const SOCKET_URL = Constants.expoConfig?.extra?.apiUrl;
+    if (!SOCKET_URL) {
+      console.warn('Socket URL not configured');
+      return;
+    }
+
+    let socketInstance: any = null;
+
+    const connectSocket = async () => {
+      try {
+        const token = await AsyncStorage.getItem('token');
+        if (!token) {
+          console.log('No token found, skipping socket connection');
+          return;
+        }
+        
+        socketInstance = io(SOCKET_URL, { 
+          transports: ['websocket'],
+          timeout: 10000,
+          reconnection: true,
+          reconnectionAttempts: 5,
+          reconnectionDelay: 1000,
+        });
+        
+        socketInstance.on('connect', () => {
+          console.log('Socket connected');
+          try {
+            socketInstance.emit('join', { token });
+          } catch (error) {
+            console.error('Error emitting join event:', error);
+          }
+        });
+        
+        socketInstance.on('connect_error', (error: any) => {
+          console.error('Socket connection error:', error);
+        });
+        
+        socketInstance.on('disconnect', (reason: string) => {
+          console.log('Socket disconnected:', reason);
+        });
+        
+        socketInstance.on('userLocation', (data: any) => {
+          try {
+            console.log('Received userLocation:', data);
+            if (data && data.userId && typeof data.latitude === 'number' && typeof data.longitude === 'number' && 
+                !isNaN(data.latitude) && !isNaN(data.longitude)) {
+              setUserLocations((prev) => ({
+                ...prev,
+                [data.userId]: { latitude: data.latitude, longitude: data.longitude },
+              }));
+            }
+          } catch (error) {
+            console.error('Error processing user location:', error);
+          }
+        });
+        
+        setSocket(socketInstance);
+      } catch (error) {
+        console.error('Error connecting to socket:', error);
+      }
+    };
+    
+    connectSocket();
+    
+    return () => {
+      if (socketInstance) {
+        try {
+          socketInstance.disconnect();
+        } catch (error) {
+          console.error('Error disconnecting socket:', error);
+        }
+      }
+    };
+  }, []);
 
   const refreshData = async () => {
     setIsRefreshing(true);
-    // Simulate API call delay
-    setTimeout(() => {
+    try {
+      // Simulate API call delay
+      setTimeout(() => {
+        setIsRefreshing(false);
+      }, 1000);
+    } catch (error) {
+      console.error('Error refreshing data:', error);
       setIsRefreshing(false);
-    }, 1000);
+    }
   };
 
   const sendLocation = (lat: number, lng: number) => {
-    if (socket) {
-      socket.emit('location', { latitude: lat, longitude: lng });
+    if (socket && typeof lat === 'number' && typeof lng === 'number' && !isNaN(lat) && !isNaN(lng)) {
+      try {
+        socket.emit('location', { latitude: lat, longitude: lng });
+      } catch (error) {
+        console.error('Error sending location:', error);
+      }
     }
   };
 
@@ -118,20 +211,24 @@ export default function AgentScreen() {
     if (agentLocation) {
       sendLocation(agentLocation.latitude, agentLocation.longitude);
     }
-    // eslint-disable-next-line
   }, [agentLocation]);
 
   // Fetch directions whenever agentLocation or any user location changes
   useEffect(() => {
     if (agentLocation && selectedUserId && userLocations[selectedUserId]) {
       const fetchRoute = async () => {
-        const from = `${userLocations[selectedUserId].longitude},${userLocations[selectedUserId].latitude}`;
-        const to = `${agentLocation.longitude},${agentLocation.latitude}`;
-        const url = `https://api.mapbox.com/directions/v5/mapbox/driving/${from};${to}?geometries=geojson&access_token=${MAPBOX_API_KEY}`;
         try {
+          const from = `${userLocations[selectedUserId].longitude},${userLocations[selectedUserId].latitude}`;
+          const to = `${agentLocation.longitude},${agentLocation.latitude}`;
+          const url = `https://api.mapbox.com/directions/v5/mapbox/driving/${from};${to}?geometries=geojson&access_token=${MAPBOX_API_KEY}`;
+          
           const res = await fetch(url);
+          if (!res.ok) {
+            throw new Error(`HTTP error! status: ${res.status}`);
+          }
+          
           const data = await res.json();
-          if (data.routes && data.routes.length > 0) {
+          if (data.routes && data.routes.length > 0 && data.routes[0].geometry && data.routes[0].geometry.coordinates) {
             setRouteCoords(
               data.routes[0].geometry.coordinates.map(
                 ([lng, lat]: [number, number]) => ({
@@ -143,7 +240,8 @@ export default function AgentScreen() {
           } else {
             setRouteCoords([]);
           }
-        } catch {
+        } catch (error) {
+          console.error('Error fetching route:', error);
           setRouteCoords([]);
         }
       };
@@ -154,8 +252,13 @@ export default function AgentScreen() {
   }, [agentLocation, selectedUserId, userLocations]);
 
   const handleLogout = async () => {
-    await AsyncStorage.clear();
-    router.replace('/login');
+    try {
+      await AsyncStorage.clear();
+      router.replace('/login');
+    } catch (error) {
+      console.error('Error during logout:', error);
+      Alert.alert('Logout Error', 'Failed to logout. Please try again.');
+    }
   };
 
   const handleTrackUser = (userId: string) => {
@@ -165,6 +268,17 @@ export default function AgentScreen() {
 
   if (isLoading) {
     return <LoadingScreen message="Loading agent dashboard..." />;
+  }
+
+  if (error) {
+    return (
+      <View style={styles.errorContainer}>
+        <Text style={styles.errorText}>{error}</Text>
+        <TouchableOpacity style={styles.retryButton} onPress={requestLocationPermission}>
+          <Text style={styles.retryButtonText}>Retry</Text>
+        </TouchableOpacity>
+      </View>
+    );
   }
 
   if (!hasPermission) {
@@ -247,49 +361,82 @@ export default function AgentScreen() {
   };
 
   // Replace renderMapView with real map
-  const renderMapView = () => (
-    <MapView style={{ flex: 1 }} region={getMapRegion()}>
-      {/* Agent's own location as a blue circle with label */}
-      {agentLocation && (
-        <Marker coordinate={agentLocation} title="You: Customer">
-          <RNView
-            style={{
-              width: 32,
-              height: 32,
-              borderRadius: 16,
-              backgroundColor: '#007AFF88',
-              justifyContent: 'center',
-              alignItems: 'center',
-              borderWidth: 2,
-              borderColor: '#007AFF',
-            }}
-          />
-        </Marker>
-      )}
-      {/* All users' locations as red location symbols with labels */}
-      {Object.entries(userLocations).map(([userId, loc]) => (
-        <Marker
-          key={userId}
-          coordinate={loc}
-          title={
-            selectedUserId === userId
-              ? `Delivery Boy (Tracking): ${userId}`
-              : `Delivery Boy: ${userId}`
-          }
-        >
-          <MaterialIcons name="location-on" size={36} color="#FF3B30" />
-        </Marker>
-      ))}
-      {/* Draw route if available */}
-      {routeCoords.length > 0 && (
-        <Polyline
-          coordinates={routeCoords}
-          strokeColor="#007AFF"
-          strokeWidth={4}
-        />
-      )}
-    </MapView>
-  );
+  const renderMapView = () => {
+    try {
+      const mapRegion = getMapRegion();
+      
+      // Validate mapRegion before rendering
+      if (!mapRegion || 
+          typeof mapRegion.latitude !== 'number' || 
+          typeof mapRegion.longitude !== 'number' || 
+          isNaN(mapRegion.latitude) || 
+          isNaN(mapRegion.longitude)) {
+        return (
+          <View style={styles.mapPlaceholder}>
+            <Text style={styles.mapPlaceholderText}>Loading map...</Text>
+          </View>
+        );
+      }
+
+      return (
+        <MapView style={{ flex: 1 }} region={mapRegion}>
+          {/* Agent's own location as a blue circle with label */}
+          {agentLocation && 
+           typeof agentLocation.latitude === 'number' && 
+           typeof agentLocation.longitude === 'number' && 
+           !isNaN(agentLocation.latitude) && 
+           !isNaN(agentLocation.longitude) && (
+            <Marker coordinate={agentLocation} title="You: Customer">
+              <RNView
+                style={{
+                  width: 32,
+                  height: 32,
+                  borderRadius: 16,
+                  backgroundColor: '#007AFF88',
+                  justifyContent: 'center',
+                  alignItems: 'center',
+                  borderWidth: 2,
+                  borderColor: '#007AFF',
+                }}
+              />
+            </Marker>
+          )}
+          {/* User locations as red markers */}
+          {Object.entries(userLocations).map(([userId, userLocation]) => {
+            if (typeof userLocation.latitude === 'number' && 
+                typeof userLocation.longitude === 'number' && 
+                !isNaN(userLocation.latitude) && 
+                !isNaN(userLocation.longitude)) {
+              return (
+                <Marker
+                  key={userId}
+                  coordinate={userLocation}
+                  title={`User ${userId}`}
+                  pinColor="#FF3B30"
+                />
+              );
+            }
+            return null;
+          })}
+          {/* Route polyline if available */}
+          {routeCoords.length > 0 && (
+            <Polyline
+              coordinates={routeCoords}
+              strokeColor="#007AFF"
+              strokeWidth={3}
+            />
+          )}
+        </MapView>
+      );
+    } catch (error) {
+      console.error('Error rendering map view:', error);
+      return (
+        <View style={styles.mapPlaceholder}>
+          <Text style={styles.mapPlaceholderText}>Error loading map</Text>
+        </View>
+      );
+    }
+  };
 
   return (
     <View style={styles.container}>
@@ -478,5 +625,39 @@ const styles = StyleSheet.create({
     color: '#007AFF',
     fontSize: 14,
     fontWeight: '600',
+  },
+  errorContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+    backgroundColor: '#F8F9FA',
+  },
+  errorText: {
+    color: '#DC3545',
+    fontSize: 18,
+    textAlign: 'center',
+    marginBottom: 20,
+  },
+  retryButton: {
+    backgroundColor: '#007AFF',
+    paddingVertical: 12,
+    paddingHorizontal: 25,
+    borderRadius: 8,
+  },
+  retryButtonText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  mapPlaceholder: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#F0F0F0',
+  },
+  mapPlaceholderText: {
+    fontSize: 18,
+    color: '#888',
   },
 });

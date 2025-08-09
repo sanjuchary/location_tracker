@@ -7,16 +7,27 @@ export class LocationTracking {
   private static isTracking = false;
 
   static async startTracking(callback: (location: Location.LocationObject) => void): Promise<void> {
-    // Add callback to list
-    this.callbacks.push(callback);
-
-    // If already tracking, don't start again
-    if (this.isTracking && this.watchSubscription) {
-      return;
-    }
-
     try {
-      // Request permission
+      // Validate callback
+      if (typeof callback !== 'function') {
+        throw new Error('Invalid callback function provided');
+      }
+
+      // Add callback to list
+      this.callbacks.push(callback);
+
+      // If already tracking, don't start again
+      if (this.isTracking && this.watchSubscription) {
+        return;
+      }
+
+      // Check if location services are enabled
+      const isEnabled = await Location.hasServicesEnabledAsync();
+      if (!isEnabled) {
+        throw new Error('Location services are not enabled');
+      }
+
+      // Request permission with better error handling
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== 'granted') {
         throw new Error('Location permission not granted');
@@ -30,18 +41,56 @@ export class LocationTracking {
         return;
       }
 
-      // Start watching position for native platforms
-      this.watchSubscription = await Location.watchPositionAsync(
-        {
-          accuracy: Location.Accuracy.High,
-          timeInterval: 3000, // Update every 3 seconds
-          distanceInterval: 5, // Update every 5 meters
-        },
-        (location) => {
-          // Notify all callbacks
-          this.callbacks.forEach(cb => cb(location));
+      // Start watching position for native platforms with better error handling
+      try {
+        this.watchSubscription = await Location.watchPositionAsync(
+          {
+            accuracy: Location.Accuracy.Balanced,
+            timeInterval: 5000,
+            distanceInterval: 10,
+          },
+          (location) => {
+            // Notify all callbacks
+            this.callbacks.forEach(cb => {
+              try {
+                if (location && location.coords && 
+                    typeof location.coords.latitude === 'number' && 
+                    typeof location.coords.longitude === 'number' && 
+                    !isNaN(location.coords.latitude) && 
+                    !isNaN(location.coords.longitude)) {
+                  cb(location);
+                }
+              } catch (error) {
+                console.error('Error in location callback:', error);
+              }
+            });
+          }
+        );
+      } catch (watchError) {
+        console.error('Error starting location watch:', watchError);
+        // Fallback to getting current position
+        try {
+          const currentLocation = await Location.getCurrentPositionAsync({
+            accuracy: Location.Accuracy.Balanced,
+          });
+          if (currentLocation && currentLocation.coords && 
+              typeof currentLocation.coords.latitude === 'number' && 
+              typeof currentLocation.coords.longitude === 'number' && 
+              !isNaN(currentLocation.coords.latitude) && 
+              !isNaN(currentLocation.coords.longitude)) {
+            this.callbacks.forEach(cb => {
+              try {
+                cb(currentLocation);
+              } catch (error) {
+                console.error('Error in location callback:', error);
+              }
+            });
+          }
+        } catch (currentError) {
+          console.error('Error getting current position:', currentError);
+          throw currentError;
         }
-      );
+      }
     } catch (error) {
       console.error('Error starting location tracking:', error);
       this.isTracking = false;
@@ -101,49 +150,52 @@ export class LocationTracking {
   }
 
   static stopTracking(): void {
-    this.isTracking = false;
-    
-    if (this.watchSubscription) {
-      this.watchSubscription.remove();
-      this.watchSubscription = null;
+    try {
+      this.isTracking = false;
+      
+      if (this.watchSubscription) {
+        this.watchSubscription.remove();
+        this.watchSubscription = null;
+      }
+      
+      this.callbacks = [];
+    } catch (error) {
+      console.error('Error stopping location tracking:', error);
     }
-    
-    this.callbacks = [];
   }
 
   static async getCurrentLocation(): Promise<Location.LocationObject | null> {
     try {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') {
+      // Check if location services are enabled
+      const isEnabled = await Location.hasServicesEnabledAsync();
+      if (!isEnabled) {
+        console.warn('Location services are not enabled');
         return null;
       }
 
-      if (Platform.OS === 'web') {
-        return new Promise((resolve, reject) => {
-          navigator.geolocation.getCurrentPosition(
-            (position) => {
-              resolve({
-                coords: {
-                  latitude: position.coords.latitude,
-                  longitude: position.coords.longitude,
-                  altitude: position.coords.altitude,
-                  accuracy: position.coords.accuracy,
-                  altitudeAccuracy: position.coords.altitudeAccuracy,
-                  heading: position.coords.heading,
-                  speed: position.coords.speed,
-                },
-                timestamp: position.timestamp,
-              });
-            },
-            reject,
-            { enableHighAccuracy: true }
-          );
-        });
+      // Check permission
+      const { status } = await Location.getForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        console.warn('Location permission not granted');
+        return null;
       }
 
-      return await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.High,
+      // Get current position
+      const location = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
       });
+
+      // Validate location data
+      if (location && location.coords && 
+          typeof location.coords.latitude === 'number' && 
+          typeof location.coords.longitude === 'number' && 
+          !isNaN(location.coords.latitude) && 
+          !isNaN(location.coords.longitude)) {
+        return location;
+      }
+
+      console.warn('Invalid location data received');
+      return null;
     } catch (error) {
       console.error('Error getting current location:', error);
       return null;
@@ -152,6 +204,13 @@ export class LocationTracking {
 
   static async getLocationAddress(latitude: number, longitude: number): Promise<string> {
     try {
+      // Validate coordinates
+      if (typeof latitude !== 'number' || typeof longitude !== 'number' || 
+          isNaN(latitude) || isNaN(longitude)) {
+        console.warn('Invalid coordinates provided for address lookup');
+        return `${latitude?.toFixed(4) || '0'}, ${longitude?.toFixed(4) || '0'}`;
+      }
+
       // For web platform, return coordinates as fallback
       if (Platform.OS === 'web') {
         return `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`;
@@ -177,7 +236,7 @@ export class LocationTracking {
       return `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`;
     } catch (error) {
       console.error('Error getting address:', error);
-      return `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`;
+      return `${latitude?.toFixed(4) || '0'}, ${longitude?.toFixed(4) || '0'}`;
     }
   }
 
